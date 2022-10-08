@@ -4,6 +4,8 @@ desc: Stereo Looper with MIDI control
 
 // Inspired by Super8 and Moebius.
 
+options: maxmem=8388608
+
 in_pin: input 1
 in_pin: input 2
 out_pin: output 1
@@ -25,19 +27,21 @@ slider2:param_midi_channel=0<0,16,1{Any,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>
 ext_midi_bus = 1.0; // Enable Reaper MIDI bus support
 
 // Audio processing states
-ST_EMPTY = 0;
-ST_RECORDING = 1;
-ST_PLAYING = 2;
-ST_PAUSED = 3;
-g_state = ST_EMPTY;
+_st_EMPTY = 1;
+_st_PAUSED = 2;
+_st_PLAYING = 3;
+_st_RECORDING = 4;
+engine_state = _st_EMPTY;
 
-// Events
-EV_RECORD_TOGGLE  = 0; // Record->Play
-EV_PAUSE_TOGGLE   = 1; // Pause->Continue
-EV_RESTART_TOGGLE = 2; // Pause->Restart
-EV_RESET          = 3; // Reset to empty
+// Input events
+_inp_PAUSE_TOGGLE   = 1; // Pause->Continue
+_inp_RECORD_TOGGLE  = 2; // Record->Play
+_inp_RESET          = 3; // Reset to empty
+_inp_RESTART_TOGGLE = 4; // Pause->Restart
 // g_user_event_count = 4;
-EV_LOOP_END = 64;      // Internal, never enqueued, immediate.
+
+// Internal events
+_evt_LOOP_END = 20;      // Internal, never enqueued, immediate.
 
 // TODO:
 // Serialize configuration settings.
@@ -84,22 +88,22 @@ EV_LOOP_END = 64;      // Internal, never enqueued, immediate.
 // channel. The recording layer always takes up all remaining memory, and is
 // truncated when saved.
 //
-g_audio_mem_start = 0;  // Start of loop audio buffer memory.
-g_audio_mem_end = __memtop();
+mem_audio_start = 0;  // Start of loop audio buffer memory.
+mem_audio_end = __memtop();
 
 // The layer prefix consists of:
 // - Count of the frames in the buffer.
 // - Start, which is how many frames into the loop this layer was recorded.
 // - Loop length, in frames, after this layer was saved.
-LAYER_PREFIX_SIZE = 3;
+_LAYER_PREFIX_SIZE = 3;
 
 // Because this anemic language has no notion of arrays or other multi-value
 // object, we have to build such in the general memory. We allocate that space
 // at the beginning of memory.
 
 // A buffer in which to compose the output of all layers for all channels.
-g_frame_buff = g_audio_mem_start;
-g_audio_mem_start += num_ch;
+mem_frame_buff = mem_audio_start;
+mem_audio_start += num_ch;
 
 
 // Map of MIDI commands to user-generated events. For ease of lookup, each
@@ -107,31 +111,31 @@ g_audio_mem_start += num_ch;
 // channel), and a byte value. We never care about the possible third byte.
 // The index into this array is the event number.
 /*
-g_user_event_map = g_audio_mem_start;
-g_audio_mem_start += g_user_event_count*2;
+g_user_event_map = mem_audio_start;
+mem_audio_start += g_user_event_count*2;
 */
 
 // Queue of pending events.
 /*
-g_event_queue = g_audio_mem_start;
+g_event_queue = mem_audio_start;
 g_event_queue_max_len = 16;
-g_audio_mem_start += g_event_queue_max_len;
+mem_audio_start += g_event_queue_max_len;
 g_event_queue_len = 0;
 */
 
 // Utilities
 function is_running() (
-    (g_state != ST_EMPTY) && (g_state != ST_PAUSED);
+    (engine_state != _st_EMPTY) && (engine_state != _st_PAUSED);
 );
 
 
 // Layer accessors
 function get_next_layer(layer) (
-    ptr + floor((layer[0]*num_ch)+LAYER_PREFIX_SIZE);
+    layer + floor((layer[0]*num_ch)+_LAYER_PREFIX_SIZE);
 );
 function get_layers_end() local(layer) (
-    layer = g_layers_start;
-    loop(g_layers_count, layer=get_next_layer(layer));
+    layer = layers_start;
+    loop(layers_count, layer=get_next_layer(layer));
     layer;
 );
 
@@ -140,14 +144,13 @@ function try_start_recording() local(ptr) (
     ptr = get_layers_end();
 
     // Make sure we have room for at least the prefix.
-    ((g_audio_mem_end - ptr) >= LAYER_PREFIX_SIZE) ? (
+    ((mem_audio_end - ptr) >= _LAYER_PREFIX_SIZE) ? (
         // Set up a layer prefix.
         ptr[0] = 0;
-        ptr[1] = g_frame_idx;
-        ptr[2] = g_loop_frame_count;
-        g_recording_layer = ptr;
-        this.layer = g_recording_layer;
-        // TODO: Overwrite undone, inactive layers.
+        ptr[1] = engine_frame_idx;
+        ptr[2] = engine_loop_len;
+        engine_recording_layer = ptr;
+        // TODO: Overwrite undone, inactive layers_
         1;
     ) : (
         0; // return false, no memory!!
@@ -158,19 +161,19 @@ function save_layer() local(frame_count) (
     // any), becomes a layer buffer.
     // Returns false if there are no layers after trying to save.
 
-    frame_count = g_frame_idx - g_recording_layer[1];
+    frame_count = engine_frame_idx - engine_recording_layer[1];
 
     frame_count ? (
         // If this will be the first layer, set the loop length
         // to its audio length.
-        !g_layers_count ? (g_loop_frame_count = g_frame_idx);
+        !layers_count ? (engine_loop_len = engine_frame_idx);
 
-        g_recording_layer[0] = frame_count;
-        g_recording_layer[2] = g_loop_frame_count;
-        g_recording_layer = -1; // No recording layer.
-        g_layers_count+=1;
+        engine_recording_layer[0] = frame_count;
+        engine_recording_layer[2] = engine_loop_len;
+        engine_recording_layer = -1; // No recording layer.
+        layers_count+=1;
     );
-    g_layers_count != 0;
+    layers_count != 0;
 );
 function pause() (
     // Does nothing. Associated state change causes frame index to stop
@@ -181,15 +184,15 @@ function reset() (
     // Zero out anything that might have been touched. Caller should
     // make sure that we're not recording, we don't clear an
     // active recording layer.
-    memset(g_layers_start, 0, get_layers_end()-g_layers_start);
+    memset(layers_start, 0, get_layers_end()-layers_start);
 
     // Layer buffer management
-    g_layers_start = g_audio_mem_start;
-    g_layers_count = 0;  // Active (playable) layers.
+    layers_start = mem_audio_start;
+    layers_count = 0;  // Active (playable) layers_
 
     // Loop length and frame position management
-    g_loop_frame_count = 0;
-    g_frame_idx = 0;
+    engine_loop_len = 0;  // In frames
+    engine_frame_idx = 0; // Index of frame currently playing/recording.
 );
 function continue() (
     // Does nothing. Associated state change causes frame index to continue
@@ -198,7 +201,7 @@ function continue() (
 );
 function restart() (
     // Associated state change causes frame index to start incrementing.
-    g_frame_idx = 0;
+    engine_frame_idx = 0;
     1;
 );
 
@@ -206,55 +209,55 @@ reset();
 
 // Given a current state and an event, possibly change states and perform
 // actions. This function embodies the entire state machine of the looper's
-// audio engine.
+// audio engine_
 function handle_event(evt) (
 /*
     Model for a new clause, with all events:
-    (ST_? == g_state) ? (
-        (EV_RECORD_TOGGLE == evt) ? (do() ? ST_RECORDING : g_state) :
-        (EV_PAUSE_TOGGLE == evt) ? (do(); ST_PAUSED) :
-        (EV_RESTART_TOGGLE == evt) ? (do(); ST_PAUSED) :
-        (EV_RESET == evt) ? (reset(); ST_EMPTY) :
-        (EV_LOOP_END == evt) ? () :
-        g_state;
+    (_st_? == engine_state) ? (
+        (_inp_RECORD_TOGGLE == evt) ? (do() ? _st_RECORDING : engine_state) :
+        (_inp_PAUSE_TOGGLE == evt) ? (do(); _st_PAUSED) :
+        (_inp_RESTART_TOGGLE == evt) ? (do(); _st_PAUSED) :
+        (_inp_RESET == evt) ? (reset(); _st_EMPTY) :
+        (_evt_LOOP_END == evt) ? () :
+        engine_state;
     ) :
 */
-    g_state = 
-        (ST_EMPTY == g_state) ? (
-            (EV_RECORD_TOGGLE == evt) ? (try_start_recording() ? ST_RECORDING : g_state) :
-            g_state;
+    engine_state = 
+        (_st_EMPTY == engine_state) ? (
+            (_inp_RECORD_TOGGLE == evt) ? (try_start_recording() ? _st_RECORDING : engine_state) :
+            engine_state;
         ) :
-        (ST_RECORDING == g_state) ? (
-            (EV_RECORD_TOGGLE == evt) ? (
-                save_layer() ? ST_PLAYING : ST_EMPTY) :
-            (EV_PAUSE_TOGGLE == evt) ? (
-                save_layer() ? (pause(); ST_PAUSED;) : ST_EMPTY) :
-            (EV_RESTART_TOGGLE == evt) ? (
-                save_layer() ? (pause(); ST_PAUSED;) : ST_EMPTY) :
-            (EV_RESET == evt) ? (save_layer(); reset(); ST_EMPTY;) :
-            (EV_LOOP_END == evt) ? (
+        (_st_RECORDING == engine_state) ? (
+            (_inp_RECORD_TOGGLE == evt) ? (
+                save_layer() ? _st_PLAYING : _st_EMPTY) :
+            (_inp_PAUSE_TOGGLE == evt) ? (
+                save_layer() ? (pause(); _st_PAUSED;) : _st_EMPTY) :
+            (_inp_RESTART_TOGGLE == evt) ? (
+                save_layer() ? (pause(); _st_PAUSED;) : _st_EMPTY) :
+            (_inp_RESET == evt) ? (save_layer(); reset(); _st_EMPTY;) :
+            (_evt_LOOP_END == evt) ? (
                 save_layer(); 
                 // TODO: Notify of memory exhaustion.
-                try_start_recording() ? ST_RECORDING : (pause(); ST_PAUSED)
+                try_start_recording() ? _st_RECORDING : (pause(); _st_PAUSED)
             ) :
-            g_state;
+            engine_state;
         ) :
-        (ST_PLAYING == g_state) ? (
-            (EV_RECORD_TOGGLE == evt) ? (try_start_recording() ? ST_RECORDING : g_state) :
-            (EV_PAUSE_TOGGLE == evt) ? (pause(); ST_PAUSED) :
-            (EV_RESTART_TOGGLE == evt) ? (pause(); ST_PAUSED) :
-            (EV_RESET == evt) ? (reset(); ST_EMPTY) :
-            g_state;
+        (_st_PLAYING == engine_state) ? (
+            (_inp_RECORD_TOGGLE == evt) ? (try_start_recording() ? _st_RECORDING : engine_state) :
+            (_inp_PAUSE_TOGGLE == evt) ? (pause(); _st_PAUSED) :
+            (_inp_RESTART_TOGGLE == evt) ? (pause(); _st_PAUSED) :
+            (_inp_RESET == evt) ? (reset(); _st_EMPTY) :
+            engine_state;
         ) :
-        (ST_PAUSED == g_state) ? (
-            (EV_RECORD_TOGGLE== evt) ? (try_start_recording() ? ST_RECORDING : g_state) :
-            (EV_PAUSE_TOGGLE == evt) ? (continue(); ST_PLAYING;) :
-            (EV_RESTART_TOGGLE == evt) ? (restart(); ST_PLAYING;) :
-            (EV_RESET == evt) ? (reset(); ST_EMPTY;) :
-            g_state;
+        (_st_PAUSED == engine_state) ? (
+            (_inp_RECORD_TOGGLE== evt) ? (try_start_recording() ? _st_RECORDING : engine_state) :
+            (_inp_PAUSE_TOGGLE == evt) ? (continue(); _st_PLAYING;) :
+            (_inp_RESTART_TOGGLE == evt) ? (restart(); _st_PLAYING;) :
+            (_inp_RESET == evt) ? (reset(); _st_EMPTY;) :
+            engine_state;
         ) : (
             // Unknown initial state. WTF?
-            g_state;
+            engine_state;
         );
 );
 function handle_input_event(evt) (
@@ -267,7 +270,7 @@ function handle_input_event(evt) (
 
 @slider
 midi_bus = param_midi_bus-1; // sets system variable
-g_midi_chan_idx = param_midi_channel-1; // Users see number, code uses index
+midi_input_chan_idx = param_midi_channel-1; // Users see number, code uses index
 
 @block
 // Code in this section is executed when each block of samples is received
@@ -275,24 +278,29 @@ g_midi_chan_idx = param_midi_channel-1; // Users see number, code uses index
 // MIDI processing is typically done here, although it can also be done
 // in @sample.
 
-// Process all MIDI commands, each of which consists of up to three bytes.
-while (midirecv(offset,m1,m2,m3)) (
-    (m1 >= 0x80) && (m1 < 0xF0) ? (
-        // Examine a channel voice message
-        midi_chan_idx = m1 & 0x0F;
-        midi_status = m1 & 0xF0;
-        midi_value = m2;
-        (-1 /* omni */ == g_midi_chan_idx || midi_chan_idx == g_midi_chan_idx) ? (
-            // We're either in OMNI mode or it's to our MIDI channel.
 
-            // TODO: Stupid simple command recognition right now.
-            // TODO: No quantization (or cmd queue growth)
-            (midi_status == 0xC0 /* PC */) ? handle_input_event(midi_value);
+function handle_midi() local(offset,m1,m2,m3,chan_idx,status,value) (
+    while (midirecv(offset,m1,m2,m3)) (
+        (m1 >= 0x80) && (m1 < 0xF0) ? (
+            // Examine a channel voice message
+            chan_idx = m1 & 0x0F;
+            status = m1 & 0xF0;
+            value = m2;
+            (-1 /* omni */ == midi_input_chan_idx || chan_idx == midi_input_chan_idx) ? (
+                // We're either in OMNI mode or it's to our MIDI channel.
+
+                // TODO: Stupid simple command recognition right now.
+                // TODO: No quantization (or cmd queue growth)
+                (status == 0xC0 /* PC */) ? handle_input_event(value+1);
+            );
         );
+        // We pass all MIDI messages through.
+        midisend(offset,m1,m2,m3);
     );
-    // We pass all MIDI messages through.
-    midisend(offset, m1, m2,m3);
-)
+);
+
+// Process all MIDI commands, each of which consists of up to three bytes.
+handle_midi();
 
 @sample
 // Code in this section gets executed once for each audio sample.
@@ -300,27 +308,27 @@ while (midirecv(offset,m1,m2,m3)) (
 // num_ch is the number of channels - typically 2, left and right.
 
 function try_append_layer_frame(frame) local(ptr) (
-    ptr = layer + LAYER_PREFIX_SIZE + g_recording_layer[0]*num_ch;
-    ((g_audio_mem_end - num_ch) > ptr) ? (
+    ptr = engine_recording_layer + _LAYER_PREFIX_SIZE + engine_recording_layer[0]*num_ch;
+    ((mem_audio_end - num_ch) > ptr) ? (
         memcpy(ptr, frame, num_ch);
-        g_recording_layer[0] += 1;
+        engine_recording_layer[0] += 1;
         1;
     ) : (
         0;
     );
 );
 function add_layer_frame(layer, frame) local(frame_idx, ptr, chan) (
-    frame_idx = (g_frame_idx % layer[2]) - layer[1];
+    frame_idx = (engine_frame_idx % layer[2]) - layer[1];
     (frame_idx >= 0 && frame_idx < layer[0]) ? (
-        ptr = layer + LAYER_PREFIX_SIZE + (frame_idx*num_ch);
+        ptr = layer + _LAYER_PREFIX_SIZE + (frame_idx*num_ch);
         chan = 0;
         loop(num_ch, frame[chan] += ptr[chan]; chan+=1);
     );
 );
 function get_layers_frame(frame) local(layer) (
     // Add the current samples from each layer to the output.
-    layer = g_layers_start;
-    loop(g_layers_count,
+    layer = layers_start;
+    loop(layers_count,
         add_layer_frame(layer, frame);
         layer = get_next_layer(layer);
     );
@@ -338,27 +346,27 @@ function clear_frame(frame) (
 );
 
 // TODO: Need a specific event for memory exhaustion.
-(ST_RECORDING == g_state) ? (
-    rcv_frame(g_frame_buff);
-    !try_append_layer_frame(g_frame_buff) ? 
-        handle_input_event(EV_PAUSE_TOGGLE);
+(_st_RECORDING == engine_state) ? (
+    rcv_frame(mem_frame_buff);
+    !try_append_layer_frame(mem_frame_buff) ? 
+        handle_input_event(_inp_PAUSE_TOGGLE);
 );
 
 // If we allowed monitoring, we'd skip this.
-clear_frame(g_frame_buff);
+clear_frame(mem_frame_buff);
 
-is_running() ? get_layers_frame(g_frame_buff);
+is_running() ? get_layers_frame(mem_frame_buff);
 
-send_frame(g_frame_buff);
+send_frame(mem_frame_buff);
 
 is_running() ? (
     // Increment the frame index on every @sample call if we're not
     // stopped. If we've reached the end of the loop, signal loop end
     // and wrap.
-    g_frame_idx += 1;
-    (g_layers_count && (g_frame_idx >= g_loop_frame_count)) ? (
-        g_frame_idx = 0;
-        handle_event(EV_LOOP_END);
+    engine_frame_idx += 1;
+    (layers_count && (engine_frame_idx >= engine_loop_len)) ? (
+        engine_frame_idx = 0;
+        handle_event(_evt_LOOP_END);
     );
 );
 
