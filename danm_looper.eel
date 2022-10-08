@@ -127,7 +127,12 @@ g_event_queue_len = 0;
 function is_running() (
     (engine_state != _st_EMPTY) && (engine_state != _st_PAUSED);
 );
-
+function debug_layer(layer) (
+    this.layer = layer;
+    this.len = this.layer[0];
+    this.start = this.layer[1];
+    this.loop_len = this.layer[2];
+);
 
 // Layer accessors
 function get_next_layer(layer) (
@@ -170,8 +175,11 @@ function save_layer() local(frame_count) (
 
         engine_recording_layer[0] = frame_count;
         engine_recording_layer[2] = engine_loop_len;
-        engine_recording_layer = -1; // No recording layer.
         layers_count+=1;
+
+        Debug.save_layer.debug_layer(engine_recording_layer); // DBG
+
+        engine_recording_layer = -1; // No recording layer.
     );
     layers_count != 0;
 );
@@ -261,7 +269,7 @@ function handle_event(evt) (
         );
 );
 function handle_input_event(evt) (
-    this.last_evt = evt; // assists debugging
+    Debug.last_evt = evt; // assists debugging
     handle_event(evt);
 );
 
