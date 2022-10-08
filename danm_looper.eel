@@ -179,7 +179,7 @@ function pause() (
 );
 function reset() (
     // Zero out anything that might have been touched. Caller should
-    // make sure that we're not recording, we don't clear and
+    // make sure that we're not recording, we don't clear an
     // active recording layer.
     memset(g_layers_start, 0, get_layers_end()-g_layers_start);
 
@@ -190,15 +190,6 @@ function reset() (
     // Loop length and frame position management
     g_loop_frame_count = 0;
     g_frame_idx = 0;
-);
-function try_save_else_reset() (
-    save_layer();
-    (g_layers_count == 0) ? (
-        reset();
-        0;
-    ) : (
-        1;
-    );
 );
 function continue() (
     // Does nothing. Associated state change causes frame index to continue
@@ -235,11 +226,11 @@ function handle_event(evt) (
         ) :
         (ST_RECORDING == g_state) ? (
             (EV_RECORD_TOGGLE == evt) ? (
-                try_save_else_reset() ? ST_PLAYING : ST_EMPTY) :
+                save_layer() ? ST_PLAYING : ST_EMPTY) :
             (EV_PAUSE_TOGGLE == evt) ? (
-                try_save_else_reset() ? (pause(); ST_PAUSED;) : ST_EMPTY) :
+                save_layer() ? (pause(); ST_PAUSED;) : ST_EMPTY) :
             (EV_RESTART_TOGGLE == evt) ? (
-                try_save_else_reset() ? (pause(); ST_PAUSED;) : ST_EMPTY) :
+                save_layer() ? (pause(); ST_PAUSED;) : ST_EMPTY) :
             (EV_RESET == evt) ? (save_layer(); reset(); ST_EMPTY;) :
             (EV_LOOP_END == evt) ? (
                 save_layer(); 
