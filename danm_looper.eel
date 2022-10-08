@@ -2,6 +2,17 @@ desc: Stereo Looper with MIDI control
 // tags: processing MIDI sampler
 // author: Dan Muller
 
+// This is a looper effect with MIDI control.
+//
+// Records a single loop.
+// Overdubs are record as distinct layers, which can be undone.
+// Undone layers are saved and can be recovered, in order.
+// Starting a new overdub discards all saved layers.
+//
+// Commands and the (currently fixed) MIDI commands that invoke them:
+//  TBS
+
+
 // Inspired by Super8 and Moebius.
 
 options: maxmem=8388608
@@ -36,10 +47,11 @@ engine_state = _st_EMPTY;
 // Input events
 _inp_PAUSE_TOGGLE   = 1; // Pause->Continue
 _inp_RECORD_TOGGLE  = 2; // Record->Play
-_inp_RESET          = 3; // Reset to empty
-_inp_RESTART_TOGGLE = 4; // Pause->Restart
-_inp_UNDO           = 5;
-// g_user_event_count = 4;
+_inp_REDO           = 3;
+_inp_RESET          = 4; // Reset to empty
+_inp_RESTART_TOGGLE = 5; // Pause->Restart
+_inp_UNDO           = 6;
+// g_user_event_count = 6;
 
 // Internal events
 _evt_LOOP_END = 20;      // Internal, never enqueued, immediate.
@@ -136,25 +148,23 @@ function debug_layer(layer) (
 );
 
 // Layer accessors
+function get_layer_size(layer) (
+    floor((layer[0]*num_ch)+_LAYER_PREFIX_SIZE)
+);
 function get_next_layer(layer) (
     layer + floor((layer[0]*num_ch)+_LAYER_PREFIX_SIZE);
 );
-function get_layers_end() local(layer) (
-    layer = layers_start;
-    loop(layers_count, layer=get_next_layer(layer));
-    layer;
-);
 function get_last_layer() local(layer) (
-    (layers_count > 0) ? (
-        layer = layers_start;
-        loop(layers_count-1, layer=get_next_layer(layer));
+    (this.count > 0) ? (
+        layer = this.start;
+        loop(this.count-1, layer=get_next_layer(layer));
         layer;
     ) : 0;
 );
 
 // State transition action support
 function try_start_recording() local(ptr) (
-    ptr = get_layers_end();
+    ptr = layers.end;
 
     // Make sure we have room for at least the prefix.
     ((mem_audio_end - ptr) >= _LAYER_PREFIX_SIZE) ? (
@@ -163,37 +173,43 @@ function try_start_recording() local(ptr) (
         ptr[1] = (engine_frame_idx == engine_loop_len) ? 0 : engine_frame_idx;
         ptr[2] = engine_loop_len;
         engine_recording_layer = ptr;
-        // TODO: Overwrite undone, inactive layers_
+        saved_layers.count = 0;
+        saved_layers.start = saved_layers.end = layers.end;
         1;
-    ) : (
-        0; // return false, no memory!!
-    );
+    ) : 0 // return false, no memory!!
 );
-function save_layer() local(frame_count) (
+function save_recording() local(frame_count) (
     // The recording buffer, which appears after the last layer buffer (if
     // any), becomes a layer buffer.
     // Returns true if the layer was saved, false if it was discarded.
 
-    //Debug.save_layer.inp.debug_layer(engine_recording_layer); // DBG
-    //Debug.save_layer.engine_frame_idx = engine_frame_idx; // DBG
+    //Debug.save_recording.inp.debug_layer(engine_recording_layer); // DBG
+    //Debug.save_recording.engine_frame_idx = engine_frame_idx; // DBG
 
     frame_count = engine_frame_idx - engine_recording_layer[1];
 
     frame_count ? (
         // If this will be the first layer, set the loop length
         // to its audio length.
-        !layers_count ? (engine_loop_len = engine_frame_idx);
+        !layers.count ? (engine_loop_len = engine_frame_idx);
 
         engine_recording_layer[0] = frame_count;
         engine_recording_layer[2] = engine_loop_len;
-        layers_count+=1;
+        layers.count+=1;
+        layers.end += get_layer_size(engine_recording_layer);
 
-        //Debug.save_layer.out.debug_layer(engine_recording_layer); // DBG
+        //Debug.save_recording.out.debug_layer(engine_recording_layer); // DBG
 
         engine_recording_layer = -1; // No recording layer.
         1;
-    )
-    : 0;
+    ) : 0
+);
+function discard_recording() (
+    (engine_recording_layer != -1) ? (
+        memset(engine_recording_layer, 0, engine_recording_layer[0]*num_ch);
+        engine_recording_layer = -1;
+        1;
+    ) : 0
 );
 function pause() (
     // Does nothing. Associated state change causes frame index to stop
@@ -201,14 +217,15 @@ function pause() (
     1;
 );
 function reset() (
-    // Zero out anything that might have been touched. Caller should
-    // make sure that we're not recording, we don't clear an
-    // active recording layer.
-    memset(layers_start, 0, get_layers_end()-layers_start);
+    // Zero out anything that might have been touched. 
+    discard_recording();
+    memset(layers.start, 0, saved_layers.end-layers.start);
 
     // Layer buffer management
-    layers_start = mem_audio_start;
-    layers_count = 0;  // Active (playable) layers_
+    layers.start = layers.end = mem_audio_start;
+    layers.count = 0;  // Active (playable) layers
+    saved_layers.start = saved_layers.end = mem_audio_start;
+    saved_layers.count = 0; // Saved (redo-able) layers
 
     // Loop length and frame position management
     engine_loop_len = 0;  // In frames
@@ -225,21 +242,36 @@ function restart() (
     engine_frame_idx = 0;
     1;
 );
-function undo() local(layer) (
-    // TODO: Track undone layer for redo.
-    layers_count ? (layers_count -= 1);
-    (layer = get_last_layer()) ? (
+function undo() local(layer, s_layer) (
+    (layer = layers.get_last_layer()) ? (
+        layers.count -= 1;
+        layers.end -= get_layer_size(layer);
+
         //Debug.undo.debug_layer(layer); // DBG
         // Note that this could cause the engine frame index to be
         // beyond the end, we have to adjust it to modulo the new 
         // loop length.
         engine_loop_len = layer[2];
         engine_frame_idx = (engine_frame_idx % engine_loop_len);
+
+        saved_layers.start = layers.end;
+        saved_layers.count += 1;
     ) : (
         engine_loop_len = 0;
         engine_frame_idx = 0;
     );
     1;
+);
+function redo() local(layer) (
+    saved_layers.count ? (
+        layer = saved_layers.start;
+        engine_loop_len = layer[2];
+        saved_layers.count -= 1;
+        saved_layers.start += get_layer_size(layer);
+        layers.count += 1;
+        layers.end = saved_layers.start;
+        1;
+    ) : 0;
 );
 
 reset();
@@ -255,7 +287,8 @@ function handle_event(evt) (
             (_inp_PAUSE_TOGGLE == evt) ? (do(); _st_PAUSED) :
             (_inp_RESTART_TOGGLE == evt) ? (do(); _st_PAUSED) :
             (_inp_RESET == evt) ? (reset(); _st_EMPTY) :
-            (_inp_UNDO == evt) ? (undo(); layers_count ? _st_EMPTY : g_state) :
+            (_inp_UNDO == evt) ? (undo(); layers.count ? _st_EMPTY : g_state) :
+            (_inp_REDO == evt) ? (redo(); layers.count ? _st_EMPTY : g_state) :
             (_evt_LOOP_END == evt) ? () :
             engine_state;
         ) :
@@ -267,20 +300,23 @@ function handle_event(evt) (
         ) :
         (_st_RECORDING == engine_state) ? (
             (_inp_RECORD_TOGGLE == evt) ? (
-                save_layer();
-                layers_count ? _st_PLAYING : _st_EMPTY) :
+                save_recording();
+                layers.count ? _st_PLAYING : _st_EMPTY) :
             (_inp_PAUSE_TOGGLE == evt) ? (
-                save_layer();
-                layers_count ? (pause(); _st_PAUSED;) : _st_EMPTY) :
+                save_recording();
+                layers.count ? (pause(); _st_PAUSED;) : _st_EMPTY) :
             (_inp_RESTART_TOGGLE == evt) ? (
-                save_layer();
-                layers_count ? (pause(); _st_PAUSED;) : _st_EMPTY) :
-            (_inp_RESET == evt) ? (save_layer(); reset(); _st_EMPTY) :
+                save_recording();
+                layers.count ? (pause(); _st_PAUSED;) : _st_EMPTY) :
+            (_inp_RESET == evt) ? (reset(); _st_EMPTY) :
             (_inp_UNDO == evt) ? (
-                save_layer() ? undo();
-                layers_count ? _st_PLAYING : _st_EMPTY) :
+                save_recording() ? undo();
+                layers.count ? _st_PLAYING : _st_EMPTY) :
+            (_inp_UNDO == evt) ? (
+                discard_recording();
+                layers.count ? _st_PLAYING : _st_EMPTY) :
             (_evt_LOOP_END == evt) ? (
-                save_layer(); 
+                save_recording(); 
                 // TODO: Notify of memory exhaustion.
                 try_start_recording() ? _st_RECORDING : (pause(); _st_PAUSED)
             ) :
@@ -291,7 +327,8 @@ function handle_event(evt) (
             (_inp_PAUSE_TOGGLE == evt) ? (pause(); _st_PAUSED) :
             (_inp_RESTART_TOGGLE == evt) ? (pause(); _st_PAUSED) :
             (_inp_RESET == evt) ? (reset(); _st_EMPTY) :
-            (_inp_UNDO == evt) ? (undo(); layers_count ? _st_PLAYING : _st_EMPTY) :
+            (_inp_UNDO == evt) ? (undo(); layers.count ? _st_PLAYING : _st_EMPTY) :
+            (_inp_REDO == evt) ? (redo(); layers.count ? _st_PLAYING : _st_EMPTY) :
             engine_state;
         ) :
         (_st_PAUSED == engine_state) ? (
@@ -299,7 +336,8 @@ function handle_event(evt) (
             (_inp_PAUSE_TOGGLE == evt) ? (continue(); _st_PLAYING;) :
             (_inp_RESTART_TOGGLE == evt) ? (restart(); _st_PLAYING;) :
             (_inp_RESET == evt) ? (reset(); _st_EMPTY;) :
-            (_inp_UNDO == evt) ? (undo(); layers_count ? _st_PAUSED : _st_EMPTY) :
+            (_inp_UNDO == evt) ? (undo(); layers.count ? _st_PAUSED : _st_EMPTY) :
+            (_inp_UNDO == evt) ? (redo(); layers.count ? _st_PAUSED : _st_EMPTY) :
             engine_state;
         ) : (
             // Unknown initial state. WTF?
@@ -373,8 +411,8 @@ function add_layer_frame(layer, frame) local(frame_idx, ptr, chan) (
 );
 function get_layers_frame(frame) local(layer) (
     // Add the current samples from each layer to the output.
-    layer = layers_start;
-    loop(layers_count,
+    layer = layers.start;
+    loop(layers.count,
         add_layer_frame(layer, frame);
         layer = get_next_layer(layer);
     );
@@ -410,7 +448,7 @@ is_running() ? (
     // stopped. If we've reached the end of the loop, signal loop end
     // and wrap.
     engine_frame_idx += 1;
-    (layers_count && (engine_frame_idx >= engine_loop_len)) ? (
+    (layers.count && (engine_frame_idx >= engine_loop_len)) ? (
         handle_event(_evt_LOOP_END);
         engine_frame_idx = 0;
     );
