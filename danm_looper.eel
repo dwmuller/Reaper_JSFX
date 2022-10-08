@@ -8,9 +8,19 @@ desc: Stereo Looper with MIDI control
 // Overdubs are record as distinct layers, which can be undone.
 // Undone layers are saved and can be recovered, in order.
 // Starting a new overdub discards all saved layers.
+// Input audio is not passed to output; only loop audio is.
+//
 //
 // Commands and the (currently fixed) MIDI commands that invoke them:
-//  TBS
+//  RECORD (toggle)     PC 1  starts/stop recording a layer
+//  UNDO                PC 2  mutes and saves last recorded layer
+//  PAUSE (toggle)      PC 3  pauses playback, or continues where paused
+//  RESTART (toggle)    PC 4  pauses playback, or starts from beginning
+//  REDO                PC 5  unmutes he last undone layer
+//  RESET               PC 6  discards all audio, including saved layers
+//
+// Configuration parameters:
+//  - Reaper MIDI bus number, MIDI control channel.
 
 
 // Inspired by Super8 and Moebius.
@@ -45,12 +55,12 @@ _st_RECORDING = 4;
 engine_state = _st_EMPTY;
 
 // Input events
-_inp_PAUSE_TOGGLE   = 1; // Pause->Continue
-_inp_RECORD_TOGGLE  = 2; // Record->Play
-_inp_REDO           = 3;
-_inp_RESET          = 4; // Reset to empty
-_inp_RESTART_TOGGLE = 5; // Pause->Restart
-_inp_UNDO           = 6;
+_inp_RECORD_TOGGLE  = 1; // Record->Play
+_inp_UNDO           = 2;
+_inp_PAUSE_TOGGLE   = 3; // Pause->Continue
+_inp_RESTART_TOGGLE = 4; // Pause->Restart
+_inp_REDO           = 5;
+_inp_RESET          = 6; // Reset to empty
 // g_user_event_count = 6;
 
 // Internal events
@@ -88,6 +98,12 @@ _evt_LOOP_END = 20;      // Internal, never enqueued, immediate.
 // Long-press actions, e.g. for reset.
 //   Not clear how to do this. Need to recognize a MIDI command pair and timing
 //   between them.
+// Configurable channel count
+//   Mute/unmute channels could allow for new techniques, but all channels are
+//   in same loop and have same saved layer stack.
+// Reaper transport integration?
+//   Set ext_noinit to avoid loss of loop when transport starts.
+//   Allow copy loop to Reaper track/take.
 
 
 
