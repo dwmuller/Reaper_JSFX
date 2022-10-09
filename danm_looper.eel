@@ -4,26 +4,31 @@ desc: Stereo Looper with MIDI control
 
 // This is a looper effect with MIDI control.
 //
-// Records a single loop.
-// Overdubs are record as distinct layers, which can be undone.
-// Undone layers are saved and can be recovered, in order.
-// Starting a new overdub discards all saved layers.
-// Input audio is not passed to output; only loop audio is.
+// Features/limitations:
+//   Records a single loop.
+//      Use multiple Reaper tracks to implement multiple loops.
+//   Overdubs are record as distinct layers.
+//   When overdub reaches end of loop, a new layer is started.
+//   Layers can be "undone" and "redone", in order.
+//   Starting a new recording or overdub discards all saved layers.
+//   Input audio is not passed to output; only loop audio is.
+//      Use Reaper track routing to monitor and mix with loops.
 //
 //
 // Commands and the (currently fixed) MIDI commands that invoke them:
-//  RECORD (toggle)     PC 1  starts/stop recording a layer
-//  UNDO                PC 2  mutes and saves last recorded layer
-//  PAUSE (toggle)      PC 3  pauses playback, or continues where paused
-//  RESTART (toggle)    PC 4  pauses playback, or starts from beginning
-//  REDO                PC 5  unmutes he last undone layer
-//  RESET               PC 6  discards all audio, including saved layers
+//   RECORD (toggle)     PC 1  starts/stop recording a layer
+//   UNDO                PC 2  mutes and saves last recorded layer
+//   PAUSE (toggle)      PC 3  pauses playback, or continues where paused
+//   RESTART (toggle)    PC 4  pauses playback, or starts from beginning
+//   REDO                PC 5  unmutes the last undone layer
+//   RESET               PC 6  discards all audio, including saved layers
 //
 // Configuration parameters:
-//  - Reaper MIDI bus number, MIDI control channel.
+//   Reaper MIDI bus number
+//   MIDI control channel.
 
-
-// Inspired by Super8 and Moebius.
+// Inspired by Super8 and Mobius.
+// Terminology and layer mgmt inspired directly by Mobius.
 
 options: maxmem=8388608
 
@@ -66,9 +71,18 @@ _inp_RESET          = 6; // Reset to empty
 // Internal events
 _evt_LOOP_END = 20;      // Internal, never enqueued, immediate.
 
-// TODO:
-// Serialize configuration settings.
-// Input control configuration (ugh)
+// Additional feature ideas
+//
+// UI
+//   Loop position, start pulse
+//   Layers active, saved
+//   Approx. audio memory remaining.
+//   Could maybe show all this on one bar? Worth trying.
+//   Reaper is apparently popular with blind users, arguing against a GUI. Could
+//   the needed indicators be supplied (first, anyway) using std sliders? I'm
+//   sure there's much more to making disability-friendly effects, but it might
+//   be a start.
+//   Also see jsfx-ui-lib.
 // Quantizing
 //   Quantize to loop is easy but only somewhat useful.
 //   Better quantizing requires determining a beat and resolution.
@@ -106,7 +120,25 @@ _evt_LOOP_END = 20;      // Internal, never enqueued, immediate.
 // Reaper transport integration?
 //   Set ext_noinit to avoid loss of loop when transport starts.
 //   Allow copy loop to Reaper track/take.
+//   Explore synchronization with time signature.
+// Input control configuration (ugh)
+//   Lack of this can be worked around with configurable control sources and
+//   other Reaper MIDI fx.
+// Serialization
+//   Sliders are saved and restored automatically.
+//   Consider saving and restoring loop audio.
+// Soul searching
+//   Is this really a worthwhile approach to looping in Reaper, or would it
+//   be better to manipulate audio and takes/layers using track-level
+//   automation?
+// Channels
+//   Making # of channels adaptable. Code is set up for it.
 
+// Code improvement ideas.
+//
+// Eliminate EMPTY state?
+//   Its only advantage is in a slight reduction of computing activity when a
+//   loop is empty.
 
 
 // Memory organization
@@ -130,7 +162,8 @@ _LAYER_PREFIX_SIZE = 3;
 
 // Because this anemic language has no notion of arrays or other multi-value
 // object, we have to build such in the general memory. We allocate that space
-// at the beginning of memory.
+// at the beginning of memory. The rest of memory is reserved for the
+// ever-changing collection of layers and the recording buffer.
 
 // A buffer in which to compose the output of all layers for all channels.
 mem_frame_buff = mem_audio_begin;
