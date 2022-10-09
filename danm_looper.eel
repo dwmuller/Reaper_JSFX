@@ -81,6 +81,8 @@ _evt_LOOP_END = 20;      // Internal, never enqueued, immediate.
 //   Is this a new state, or a substate of recording?
 //   Best to think of this as the default, single-loop recording special
 //   substate. 
+// Play once
+//   aka stop at loop end.
 // Variable size layers
 //   Store offset and len at start of each layer.
 //   Layer sample retrieval more complex.
